@@ -283,7 +283,10 @@ rrd_context_t *rrd_force_new_context(void);
     time_t *);
 
 /* HELPER FUNCTIONS */
-#ifdef (ESP32)
+#ifdef ESP32
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+static SemaphoreHandle_t xRrdFlockSemaphore = NULL;
 #define rrd_set_error(...) ESP_LOGE(__FILE__, ##__VA_ARGS__)
 #else
     void      rrd_set_error(

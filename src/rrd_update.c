@@ -538,7 +538,10 @@ int _rrd_update(
 /*    rrd_dontneed(rrd_file,&rrd); */
     rrd_free(&rrd);
     rrd_close(rrd_file);
-
+#ifdef ESP32
+    log_v("semaphore given");
+    xSemaphoreGive( xRrdFlockSemaphore );
+#endif
     free(pdp_new);
     free(tmpl_idx);
     free(pdp_temp);
@@ -554,6 +557,10 @@ int _rrd_update(
     free(updvals);
   err_close:
     rrd_close(rrd_file);
+#ifdef ESP32
+    log_v("semaphore given");
+    xSemaphoreGive( xRrdFlockSemaphore );
+#endif
   err_free:
     rrd_free(&rrd);
   err_out:
@@ -582,8 +589,18 @@ int rrd_lock(
         }
 #elif defined(ESP32)
 // flock does not work on esp32, so 
-// this needs to have a mutex wrapper.
-        return 0;
+// this is a binary semaphore for the whole library.
+        if (xRrdFlockSemaphore == NULL) {
+             xRrdFlockSemaphore = xSemaphoreCreateBinary();
+             if (xRrdFlockSemaphore == NULL){
+                 rrd_set_error("File Lock Semaphore Create Failed");
+                 return 1;
+             }
+             xSemaphoreGive( xRrdFlockSemaphore );
+             log_v("semaphore given");
+        }
+        log_v("semaphore taken");
+        return (xSemaphoreTake(xRrdFlockSemaphore, portMAX_DELAY) == pdFALSE);
 #else
         struct flock lock;
 

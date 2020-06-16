@@ -30,7 +30,7 @@
 #endif // WIN32
 
 #ifdef HAVE_CONFIG_H
-#include "../rrd_config.h"
+#include "rrd_config.h"
 #endif
 
 #include "rrd_getopt.h"

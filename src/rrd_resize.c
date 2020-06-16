@@ -65,12 +65,14 @@ int rrd_resize(
         return (-1);
     }
 
+#ifndef ESP32
     if (rrd_lock(rrd_file) != 0) {
         rrd_set_error("could not lock original RRD");
         rrd_free(&rrdold);
         rrd_close(rrd_file);
         return (-1);
     }
+#endif
 
 
     if (target_rra >= rrdold.stat_head->rra_cnt) {
@@ -107,6 +109,7 @@ int rrd_resize(
         rrd_close(rrd_out_file);
         return (-1);
     }
+#ifndef ESP32
     if (rrd_lock(rrd_out_file) != 0) {
         rrd_set_error("could not lock new RRD");
         rrd_free(&rrdnew);
@@ -115,6 +118,7 @@ int rrd_resize(
         rrd_close(rrd_out_file);
         return (-1);
     }
+#endif
 /*XXX: do one write for those parts of header that are unchanged */
     if ((rrdnew.stat_head = (stat_head_t*)malloc(sizeof(stat_head_t))) == NULL) {
         rrd_set_error("allocating stat_head for new RRD");

@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 #else
 #ifdef HAVE_CONFIG_H
-#include "../rrd_config.h"
+#include "rrd_config.h"
 #endif
 #endif
 
