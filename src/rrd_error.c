@@ -41,7 +41,7 @@
 #define ERRBUFLEN 256
 #define CTX (rrd_get_context())
 
-/*
+#ifndef ESP32
 void rrd_set_error(
     char *fmt,
     ...)
@@ -57,7 +57,7 @@ void rrd_set_error(
 #endif
     va_end(argp);
 }
-*/
+#endif
 
 int rrd_test_error(
     void)

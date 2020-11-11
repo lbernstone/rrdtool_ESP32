@@ -539,7 +539,7 @@ int _rrd_update(
     rrd_free(&rrd);
     rrd_close(rrd_file);
 #ifdef ESP32
-    log_v("semaphore given");
+    //log_v("semaphore given");
     xSemaphoreGive( xRrdFlockSemaphore );
 #endif
     free(pdp_new);
@@ -558,7 +558,7 @@ int _rrd_update(
   err_close:
     rrd_close(rrd_file);
 #ifdef ESP32
-    log_v("semaphore given");
+    //log_v("semaphore given");
     xSemaphoreGive( xRrdFlockSemaphore );
 #endif
   err_free:
@@ -597,9 +597,9 @@ int rrd_lock(
                  return 1;
              }
              xSemaphoreGive( xRrdFlockSemaphore );
-             log_v("semaphore given");
+             //log_v("semaphore given");
         }
-        log_v("semaphore taken");
+        //log_v("semaphore taken");
         return (xSemaphoreTake(xRrdFlockSemaphore, portMAX_DELAY) == pdFALSE);
 #else
         struct flock lock;

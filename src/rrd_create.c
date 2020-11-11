@@ -208,7 +208,6 @@ int rrd_create_r(
                 rrd_free2(&rrd);
                 return -1;
             }
-
             /* parse the remainder of the arguments */
             switch (dst_conv(rrd.ds_def[rrd.stat_head->ds_cnt].dst)) {
             case DST_COUNTER:
@@ -553,6 +552,44 @@ int rrd_create_r(
         return (-1);
     }
     return rrd_create_fn(filename, &rrd);
+}
+
+int rrd_create_str(const char* cmdString) {
+  if (!cmdString) return -1;
+  int result = -1;
+#ifdef ESP32
+  char* pickString = (char*) malloc(strlen(cmdString)+3*sizeof(char));
+  snprintf(pickString, strlen(cmdString)+3, "a %s", cmdString); //add an extra parameter for argv[0]
+  char** cmd = NULL;
+  char* tokptr;
+  char* p = strtok_r(pickString, " ", &tokptr);
+  char* fname;
+  int slots = 0;
+  while (p) {
+    cmd = (char**) realloc(cmd, sizeof (char*) * ++slots);
+    if (cmd == NULL) {
+      rrd_set_error("memory allocation failed");
+      return -1;
+    }
+    cmd[slots-1] = p;
+    if (strncmp(p,"/",1) == 0) {
+      fname = (char*) malloc(strlen(p)+1);
+      strcpy(fname,p);
+    }
+    p = strtok_r(NULL, " ", &tokptr);
+  }
+
+  result = rrd_create(slots, (char**)cmd);
+  if (result) {
+    rrd_set_error("Unable to create rrd %s: %d", fname, result);
+  } else {
+    log_v("created rrd: %s", fname);
+  }
+  free(fname);
+  free(cmd);
+  free(pickString);
+#endif
+  return result;
 }
 
 void parseGENERIC_DS(
