@@ -15,8 +15,8 @@
 
 #define BUILD_TEST_DATA
 
-const char* myssid      = "larryb";
-const char* mypasswd    = "clownfish";
+const char* myssid      = "myssid";
+const char* mypasswd    = "mypasswd";
 const char ntpSrv[]     = "pool.ntp.org";
 
 const char* rrd_files[] = {"/ffat/rrd_0.rrd", "/ffat/rrd_1.rrd"}; // Must use full vfs path
