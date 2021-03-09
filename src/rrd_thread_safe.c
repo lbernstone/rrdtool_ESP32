@@ -1,12 +1,12 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  * This file:     Copyright 2003 Peter Stamfest <peter@stamfest.at> 
  *                             & Tobias Oetiker
  * Distributed under the GPL
  *****************************************************************************
  * rrd_thread_safe.c   Contains routines used when thread safety is required
  *****************************************************************************
- * $Id: rrd_thread_safe.c 1946 2009-10-24 10:46:42Z oetiker $
+ * $Id$
  *************************************************************************** */
 
 #include <pthread.h>
@@ -18,7 +18,7 @@
 /* Key for the thread-specific rrd_context */
 static pthread_key_t context_key;
 
-/* Once-only initialisation of the key */
+/* Once-only initialization of the key */
 static pthread_once_t context_key_once = PTHREAD_ONCE_INIT;
 
 /* Free the thread-specific rrd_context - we might actually use
@@ -66,7 +66,7 @@ const char *rrd_strerror(
     /* Even though POSIX/XSI requires "strerror_r" to return an "int", some
      * systems (e.g. the GNU libc) return a "char *" _and_ ignore the second
      * argument ... -tokkee */
-#if STRERROR_R_CHAR_P
+#ifdef STRERROR_R_CHAR_P
     ret = strerror_r(err, ctx->lib_errstr, sizeof(ctx->lib_errstr));
     if ((! ret) || (*ret == '\0')) {
         if (*ctx->lib_errstr != '\0')

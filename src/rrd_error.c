@@ -1,9 +1,9 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  *****************************************************************************
  * rrd_error.c   Common Header File
  *****************************************************************************
- * $Id: rrd_error.c 1946 2009-10-24 10:46:42Z oetiker $
+ * $Id$
  * $Log$
  * Revision 1.4  2003/02/22 21:57:03  oetiker
  * a patch to avoid a memory leak and a Makefile.am patch to
@@ -16,7 +16,7 @@
  * library is identical to librrd, but it contains support code for per-thread
  * global variables currently used for error information only. This is similar
  * to how errno per-thread variables are implemented.  librrd_th must be linked
- * alongside of libpthred
+ * alongside of libpthread
  *
  * There is also a new file "THREADS", holding some documentation.
  *
@@ -30,18 +30,15 @@
  *
  *************************************************************************** */
 
-#include "rrd_tool.h"
+#include <stdlib.h>
 #include <stdarg.h>
 
-#ifdef WIN32
-#include <stdlib.h>
-#endif
+#include "rrd_tool.h"
 
 #define MAXLEN 4096
 #define ERRBUFLEN 256
 #define CTX (rrd_get_context())
 
-#ifndef ESP32
 void rrd_set_error(
     char *fmt,
     ...)
@@ -57,7 +54,6 @@ void rrd_set_error(
 #endif
     va_end(argp);
 }
-#endif
 
 int rrd_test_error(
     void)

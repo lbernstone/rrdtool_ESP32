@@ -1,19 +1,17 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  *****************************************************************************
  * rrd_hw.c : Support for Holt-Winters Smoothing/ Aberrant Behavior Detection
  *****************************************************************************
  * Initial version by Jake Brutlag, WebTV Networks, 5/1/00
  *****************************************************************************/
 
+#include <stdlib.h>
+
 #include "rrd_tool.h"
 #include "rrd_hw.h"
 #include "rrd_hw_math.h"
 #include "rrd_hw_update.h"
-
-#ifdef WIN32
-#include <stdlib.h>
-#endif
 
 #define hw_dep_idx(rrd, rra_idx) rrd->rra_def[rra_idx].par[RRA_dependent_rra_idx].u_cnt
 
@@ -93,7 +91,7 @@ void erase_violations(
     char     *violations_array;
 
     /* check that rra_idx is a CF_FAILURES array */
-    if (cf_conv(rrd->rra_def[rra_idx].cf_nam) != CF_FAILURES) {
+    if (rrd_cf_conv(rrd->rra_def[rra_idx].cf_nam) != CF_FAILURES) {
 #ifdef DEBUG
         fprintf(stderr, "erase_violations called for non-FAILURES RRA: %s\n",
                 rrd->rra_def[rra_idx].cf_nam);
@@ -141,6 +139,7 @@ int apply_smoother(
     unsigned long offset;
     FIFOqueue **buffers;
     rrd_value_t *working_average;
+    rrd_value_t *rrd_values_cpy;
     rrd_value_t *baseline;
 
     if (atoi(rrd->stat_head->version) >= 4) {
@@ -211,13 +210,19 @@ int apply_smoother(
         }
     }
 
+    /* as we are working through the value, we have to make sure to not double
+       apply the smoothing after wrapping around. so best is to copy the rrd_values first */
+
+    rrd_values_cpy = (rrd_value_t *) calloc(row_length*row_count, sizeof(rrd_value_t));
+    memcpy(rrd_values_cpy,rrd_values,sizeof(rrd_value_t)*row_length*row_count);
+
     /* compute moving averages */
     for (i = offset; i < row_count + offset; ++i) {
         for (j = 0; j < row_length; ++j) {
             k = MyMod(i, row_count);
             /* add a term to the sum */
-            working_average[j] += rrd_values[k * row_length + j];
-            queue_push(buffers[j], rrd_values[k * row_length + j]);
+            working_average[j] += rrd_values_cpy[k * row_length + j];
+            queue_push(buffers[j], rrd_values_cpy[k * row_length + j]);
 
             /* reset k to be the center of the window */
             k = MyMod(i - offset, row_count);
@@ -236,16 +241,17 @@ int apply_smoother(
         queue_dealloc(buffers[i]);
         baseline[i] /= row_count;
     }
+    free(rrd_values_cpy);
     free(buffers);
     free(working_average);
 
-    if (cf_conv(rrd->rra_def[rra_idx].cf_nam) == CF_SEASONAL) {
+    if (rrd_cf_conv(rrd->rra_def[rra_idx].cf_nam) == CF_SEASONAL) {
         rrd_value_t (
     *init_seasonality) (
     rrd_value_t seasonal_coef,
     rrd_value_t intercept);
 
-        switch (cf_conv(rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam)) {
+        switch (rrd_cf_conv(rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam)) {
         case CF_HWPREDICT:
             init_seasonality = hw_additive_init_seasonality;
             break;
@@ -256,6 +262,8 @@ int apply_smoother(
             rrd_set_error("apply smoother: SEASONAL rra doesn't have "
                           "valid dependency: %s",
                           rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam);
+            free(rrd_values);
+            free(baseline);
             return -1;
         }
 
@@ -271,6 +279,8 @@ int apply_smoother(
             (rrd->cdp_prep[offset]).scratch[CDP_hw_intercept].u_val +=
                 baseline[j];
         }
+/* if we are not running on mmap, lets write stuff to disk now */
+#ifndef HAVE_MMAP
         /* flush cdp to disk */
         if (rrd_seek(rrd_file, sizeof(stat_head_t) +
                      rrd->stat_head->ds_cnt * sizeof(ds_def_t) +
@@ -290,6 +300,8 @@ int apply_smoother(
             free(rrd_values);
             return -1;
         }
+#endif
+
     }
 
     /* endif CF_SEASONAL */
@@ -305,6 +317,7 @@ int apply_smoother(
         != (ssize_t) (sizeof(rrd_value_t) * row_length * row_count)) {
         rrd_set_error("apply_smoother: write failed to %lu", rra_start);
         free(rrd_values);
+        free(baseline);
         return -1;
     }
 
@@ -337,7 +350,7 @@ void reset_aberrant_coefficients(
     /* loop over the RRAs */
     for (rra_idx = 0; rra_idx < rrd->stat_head->rra_cnt; rra_idx++) {
         cdp_idx = rra_idx * (rrd->stat_head->ds_cnt) + ds_idx;
-        switch (cf_conv(rrd->rra_def[rra_idx].cf_nam)) {
+        switch (rrd_cf_conv(rrd->rra_def[rra_idx].cf_nam)) {
         case CF_HWPREDICT:
         case CF_MHWPREDICT:
             init_hwpredict_cdp(&(rrd->cdp_prep[cdp_idx]));
@@ -352,7 +365,7 @@ void reset_aberrant_coefficients(
             /* move to first entry of data source for this rra */
             rrd_seek(rrd_file, rra_start + ds_idx * sizeof(rrd_value_t),
                      SEEK_SET);
-            /* entries for the same data source are not contiguous, 
+            /* entries for the same data source are not contiguous,
              * temporal entries are contiguous */
             for (i = 0; i < rrd->rra_def[rra_idx].row_cnt; ++i) {
                 if (rrd_write(rrd_file, &nan_buffer, sizeof(rrd_value_t) * 1)
@@ -450,7 +463,7 @@ int update_aberrant_CF(
         return update_devpredict(rrd, cdp_idx, rra_idx, ds_idx,
                                  CDP_scratch_idx);
     case CF_SEASONAL:
-        switch (cf_conv(rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam)) {
+        switch (rrd_cf_conv(rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam)) {
         case CF_HWPREDICT:
             return update_seasonal(rrd, cdp_idx, rra_idx, ds_idx,
                                    CDP_scratch_idx, seasonal_coef,
@@ -463,7 +476,7 @@ int update_aberrant_CF(
             return -1;
         }
     case CF_DEVSEASONAL:
-        switch (cf_conv(rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam)) {
+        switch (rrd_cf_conv(rrd->rra_def[hw_dep_idx(rrd, rra_idx)].cf_nam)) {
         case CF_HWPREDICT:
             return update_devseasonal(rrd, cdp_idx, rra_idx, ds_idx,
                                       CDP_scratch_idx, seasonal_coef,
@@ -476,7 +489,7 @@ int update_aberrant_CF(
             return -1;
         }
     case CF_FAILURES:
-        switch (cf_conv
+        switch (rrd_cf_conv
                 (rrd->rra_def[hw_dep_idx(rrd, hw_dep_idx(rrd, rra_idx))].
                  cf_nam)) {
         case CF_HWPREDICT:
@@ -503,7 +516,7 @@ static unsigned long MyMod(
     unsigned long new_val;
 
     if (val < 0)
-        new_val = ((unsigned long) abs(val)) % mod;
+        new_val = ((unsigned long) labs(val)) % mod;
     else
         new_val = (val % mod);
 

@@ -1,9 +1,9 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  *****************************************************************************
  * change header parameters of an rrd
  *****************************************************************************
- * $Id: rrd_tune.c 1946 2009-10-24 10:46:42Z oetiker $
+ * $Id$
  * $Log$
  * Revision 1.6  2004/05/26 22:11:12  oetiker
  * reduce compiler warnings. Many small fixes. -- Mike Slifcak <slif@bellsouth.net>
@@ -22,12 +22,12 @@
  * RRD files created and smoothed with the old code.
  * (4) Adds the aberrant-reset flag to rrd tune. This operation, which is
  * specified for a single data source, causes the holt-winters algorithm to
- * forget everthing it has learned and start over.
+ * forget everything it has learned and start over.
  * (5) Fixes a few out-of-date code comments.
  *
  * Revision 1.3  2001/03/07 21:21:54  oetiker
- * complete rewrite of rrdgraph documentation. This also includs info
- * on upcomming/planned changes to the rrdgraph interface and functionality
+ * complete rewrite of rrdgraph documentation. This also includes info
+ * on upcoming/planned changes to the rrdgraph interface and functionality
  * -- Alex van den Bogaerdt <alex@slot.hollandcasino.nl>
  *
  * Revision 1.2  2001/03/04 13:01:55  oetiker
@@ -39,28 +39,35 @@
  *
  *****************************************************************************/
 
+#include <stdlib.h>
+#include <locale.h>
+
+#include "rrd_strtod.h"
 #include "rrd_tool.h"
 #include "rrd_rpncalc.h"
 #include "rrd_hw.h"
-#include <locale.h>
+#include "rrd_modify.h"
+#include "rrd_client.h"
 
-#ifdef WIN32
-#include <stdlib.h>
-#endif
-
-int       set_hwarg(
+static int set_hwarg(
     rrd_t *rrd,
     enum cf_en cf,
     enum rra_par_en rra_par,
-    char *arg);
-int       set_deltaarg(
+    const char *arg);
+static int set_deltaarg(
     rrd_t *rrd,
     enum rra_par_en rra_par,
-    char *arg);
-int       set_windowarg(
+    const char *arg);
+static int set_windowarg(
     rrd_t *rrd,
     enum rra_par_en,
-    char *arg);
+    const char *arg);
+
+static int set_hwsmootharg(
+    rrd_t *rrd,
+    enum cf_en cf,
+    enum rra_par_en rra_par,
+    const char *arg);
 
 int rrd_tune(
     int argc,
@@ -73,133 +80,184 @@ int rrd_tune(
     char      ds_nam[DS_NAM_SIZE];
     char      ds_new[DS_NAM_SIZE];
     long      heartbeat;
-    double    min;
-    double    max;
+    double    min = 0;
+    double    max = 0;
     char      dst[DST_SIZE];
-    rrd_file_t *rrd_file;
-    struct option long_options[] = {
-        {"heartbeat", required_argument, 0, 'h'},
-        {"minimum", required_argument, 0, 'i'},
-        {"maximum", required_argument, 0, 'a'},
-        {"data-source-type", required_argument, 0, 'd'},
-        {"data-source-rename", required_argument, 0, 'r'},
+    int       rc = -1;
+    int       opt_newstep = -1;
+    rrd_file_t *rrd_file = NULL;
+    char      *opt_daemon = NULL;
+    char      double_str[ 41 ] = {0};
+    const char *in_filename = NULL;
+    struct optparse_long longopts[] = {
+        {"heartbeat", 'h', OPTPARSE_REQUIRED},
+        {"minimum", 'i', OPTPARSE_REQUIRED},
+        {"maximum", 'a', OPTPARSE_REQUIRED},
+        {"data-source-type", 'd', OPTPARSE_REQUIRED},
+        {"data-source-rename", 'r', OPTPARSE_REQUIRED},
         /* added parameter tuning options for aberrant behavior detection */
-        {"deltapos", required_argument, 0, 'p'},
-        {"deltaneg", required_argument, 0, 'n'},
-        {"window-length", required_argument, 0, 'w'},
-        {"failure-threshold", required_argument, 0, 'f'},
-        {"alpha", required_argument, 0, 'x'},
-        {"beta", required_argument, 0, 'y'},
-        {"gamma", required_argument, 0, 'z'},
-        {"gamma-deviation", required_argument, 0, 'v'},
-        {"smoothing-window", required_argument, 0, 's'},
-        {"smoothing-window-deviation", required_argument, 0, 'S'},
-        {"aberrant-reset", required_argument, 0, 'b'},
-        {0, 0, 0, 0}
+        {"deltapos", 'p', OPTPARSE_REQUIRED},
+        {"deltaneg", 'n', OPTPARSE_REQUIRED},
+        {"window-length", 'w', OPTPARSE_REQUIRED},
+        {"failure-threshold", 'f', OPTPARSE_REQUIRED},
+        {"alpha", 'x', OPTPARSE_REQUIRED},
+        {"beta", 'y', OPTPARSE_REQUIRED},
+        {"gamma", 'z', OPTPARSE_REQUIRED},
+        {"gamma-deviation", 'v', OPTPARSE_REQUIRED},
+        {"smoothing-window", 's', OPTPARSE_REQUIRED},
+        {"smoothing-window-deviation", 'S', OPTPARSE_REQUIRED},
+        {"aberrant-reset", 'b', OPTPARSE_REQUIRED},
+	// integration of rrd_modify functionality.
+        {"step", 't', OPTPARSE_REQUIRED},
+	/* unfortunately, '-d' is already taken */
+        {"daemon", 'D', OPTPARSE_REQUIRED},
+        {0}
     };
+    struct optparse options;
+    int opt;
 
-    optind = 0;
-    opterr = 0;         /* initialize getopt */
+    rrd_thread_init();
+    /* Fix CWE-457 */
+    memset(&rrd, 0, sizeof(rrd_t));
 
+    /* before we open the input RRD, we should flush it from any caching
+    daemon, because we might totally rewrite it later on */
 
-    rrd_file = rrd_open(argv[1], &rrd, RRD_READWRITE);
-    if (rrd_file == NULL) {
-        rrd_free(&rrd);
-        return -1;
+    /* for this, we FIRST have to find the daemon, this means we must parse options twice... */
+    
+    optparse_init(&options, argc, argv);
+    while ((opt = optparse_long(&options, longopts, NULL)) != -1) {
+	switch (opt) {
+	case 'D':
+            if (opt_daemon != NULL)
+		free (opt_daemon);
+            opt_daemon = strdup (options.optarg);
+            if (opt_daemon == NULL)
+            {
+                rrd_set_error ("strdup failed.");
+                return (-1);
+            }
+            break;
+	default:
+	    break;
+	}
+    }
+    
+    // connect to daemon (will take care of environment variable automatically)
+    if (rrdc_connect(opt_daemon) != 0) {
+    	rrd_set_error("Cannot connect to daemon");
+    	free(opt_daemon);
+	return 1;
     }
 
-    while (1) {
-        int       option_index = 0;
-        int       opt;
-        char     *old_locale = "";
+    if (opt_daemon) {
+	free(opt_daemon);
+	opt_daemon = NULL;
+    }
 
-        opt = getopt_long(argc, argv, "h:i:a:d:r:p:n:w:f:x:y:z:v:b:",
-                          long_options, &option_index);
-        if (opt == EOF)
-            break;
+    if (!options.optind || options.optind >= options.argc) {
+	// missing file name...
+	rrd_set_error("missing file name");
+	goto done;
+    }
+    
+    /* NOTE: optparse_long reorders argv and places all NON option arguments to
+    the back, starting with optind. This means the file name has travelled to
+    options.argv[options.optind] */
+    
+    in_filename = options.argv[options.optind];
+    
+    if (rrdc_is_any_connected()) {
+	// is it a good idea to just ignore the error ????
+	rrdc_flush(in_filename);
+	rrd_clear_error();
+    }
+
+    rrd_init(&rrd);
+    rrd_file = rrd_open(in_filename, &rrd, RRD_READWRITE | RRD_LOCK |
+                                           RRD_READAHEAD | RRD_READVALUES);
+    if (rrd_file == NULL) {
+	goto done;
+    }
+
+    optparse_init(&options, argc, argv); /* re-initialize optparse */
+    while ((opt = optparse_long(&options, longopts, NULL)) != -1) {
+        unsigned int strtod_ret_val;
 
         optcnt++;
         switch (opt) {
         case 'h':
-            old_locale = setlocale(LC_NUMERIC, "C");
             if ((matches =
-                 sscanf(optarg, DS_NAM_FMT ":%ld", ds_nam,
-                        &heartbeat)) != 2) {
+		 sscanf(options.optarg, DS_NAM_FMT ":%ld", ds_nam,
+			&heartbeat)) != 2) {
                 rrd_set_error("invalid arguments for heartbeat");
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                setlocale(LC_NUMERIC, old_locale);
-                return -1;
+		goto done;
             }
-            setlocale(LC_NUMERIC, old_locale);
             if ((ds = ds_match(&rrd, ds_nam)) == -1) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             rrd.ds_def[ds].par[DS_mrhb_cnt].u_cnt = heartbeat;
             break;
 
         case 'i':
-            old_locale = setlocale(LC_NUMERIC, "C");
-            if ((matches =
-                 sscanf(optarg, DS_NAM_FMT ":%lf", ds_nam, &min)) < 1) {
+            matches = sscanf(options.optarg, DS_NAM_FMT ":%40[U0-9.e+-]", ds_nam, double_str);
+            if ( matches == 2 ) {
+                if (strcmp(double_str,"U") == 0){
+                    min = DNAN;
+                }
+                else {
+                    strtod_ret_val = rrd_strtodbl( double_str, NULL, &min, NULL );
+                    if ((strtod_ret_val != 2)) {
+                        rrd_set_error("invalid arguments for minimum ds value");
+                        goto done;
+                    }
+                }
+            }
+            else {
                 rrd_set_error("invalid arguments for minimum ds value");
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                setlocale(LC_NUMERIC, old_locale);
-                return -1;
-            }
-            setlocale(LC_NUMERIC, old_locale);
+                goto done;
+            } 
             if ((ds = ds_match(&rrd, ds_nam)) == -1) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
-
-            if (matches == 1)
-                min = DNAN;
             rrd.ds_def[ds].par[DS_min_val].u_val = min;
             break;
 
         case 'a':
-            old_locale = setlocale(LC_NUMERIC, "C");
-            if ((matches =
-                 sscanf(optarg, DS_NAM_FMT ":%lf", ds_nam, &max)) < 1) {
+            matches = sscanf(options.optarg, DS_NAM_FMT ":%40[U0-9.e+-]", ds_nam, double_str);
+            if ( matches == 2 ) {
+                if (strcmp(double_str,"U") == 0){
+                    max = DNAN;
+                }
+                else {
+                    strtod_ret_val = rrd_strtodbl( double_str, NULL, &max, NULL );
+                    if ((strtod_ret_val != 2)) {
+                        rrd_set_error("invalid arguments for maximum ds value");
+                        goto done;
+                    }
+                }
+            }
+            else {
                 rrd_set_error("invalid arguments for maximum ds value");
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                setlocale(LC_NUMERIC, old_locale);
-                return -1;
-            }
-            setlocale(LC_NUMERIC, old_locale);
+                goto done;
+            } 
             if ((ds = ds_match(&rrd, ds_nam)) == -1) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
-            if (matches == 1)
-                max = DNAN;
             rrd.ds_def[ds].par[DS_max_val].u_val = max;
             break;
-
+            
         case 'd':
             if ((matches =
-                 sscanf(optarg, DS_NAM_FMT ":" DST_FMT, ds_nam, dst)) != 2) {
+                 sscanf(options.optarg, DS_NAM_FMT ":" DST_FMT, ds_nam, dst)) != 2) {
                 rrd_set_error("invalid arguments for data source type");
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
-            }
+		goto done;
+	    }
             if ((ds = ds_match(&rrd, ds_nam)) == -1) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             if ((int) dst_conv(dst) == -1) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             /* only reset when something is changed */
             if (strncmp(rrd.ds_def[ds].dst, dst, DST_SIZE - 1) != 0) {
@@ -215,120 +273,105 @@ int rrd_tune(
             break;
         case 'r':
             if ((matches =
-                 sscanf(optarg, DS_NAM_FMT ":" DS_NAM_FMT, ds_nam,
+                 sscanf(options.optarg, DS_NAM_FMT ":" DS_NAM_FMT, ds_nam,
                         ds_new)) != 2) {
                 rrd_set_error("invalid arguments for data source type");
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             if ((ds = ds_match(&rrd, ds_nam)) == -1) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
-            strncpy(rrd.ds_def[ds].ds_nam, ds_new, DS_NAM_SIZE - 1);
+            strncpy(rrd.ds_def[ds].ds_nam, ds_new, DS_NAM_SIZE);
             rrd.ds_def[ds].ds_nam[DS_NAM_SIZE - 1] = '\0';
             break;
         case 'p':
-            if (set_deltaarg(&rrd, RRA_delta_pos, optarg)) {
-                rrd_free(&rrd);
-                return -1;
+            if (set_deltaarg(&rrd, RRA_delta_pos, options.optarg)) {
+		goto done;
             }
             break;
         case 'n':
-            if (set_deltaarg(&rrd, RRA_delta_neg, optarg)) {
-                rrd_free(&rrd);
-                return -1;
+            if (set_deltaarg(&rrd, RRA_delta_neg, options.optarg)) {
+		goto done;
             }
             break;
         case 'f':
-            if (set_windowarg(&rrd, RRA_failure_threshold, optarg)) {
-                rrd_free(&rrd);
-                return -1;
+            if (set_windowarg(&rrd, RRA_failure_threshold, options.optarg)) {
+		goto done;
             }
             break;
         case 'w':
-            if (set_windowarg(&rrd, RRA_window_len, optarg)) {
-                rrd_free(&rrd);
-                return -1;
+            if (set_windowarg(&rrd, RRA_window_len, options.optarg)) {
+		goto done;
             }
             break;
         case 'x':
-            if (set_hwarg(&rrd, CF_HWPREDICT, RRA_hw_alpha, optarg)) {
-                if (set_hwarg(&rrd, CF_MHWPREDICT, RRA_hw_alpha, optarg)) {
-                    rrd_free(&rrd);
-                    return -1;
+            if (set_hwarg(&rrd, CF_HWPREDICT, RRA_hw_alpha, options.optarg)) {
+                if (set_hwarg(&rrd, CF_MHWPREDICT, RRA_hw_alpha, options.optarg)) {
+		    goto done;
                 }
                 rrd_clear_error();
             }
             break;
         case 'y':
-            if (set_hwarg(&rrd, CF_HWPREDICT, RRA_hw_beta, optarg)) {
-                if (set_hwarg(&rrd, CF_MHWPREDICT, RRA_hw_beta, optarg)) {
-                    rrd_free(&rrd);
-                    return -1;
+            if (set_hwarg(&rrd, CF_HWPREDICT, RRA_hw_beta, options.optarg)) {
+                if (set_hwarg(&rrd, CF_MHWPREDICT, RRA_hw_beta, options.optarg)) {
+		    goto done;
                 }
                 rrd_clear_error();
             }
             break;
         case 'z':
-            if (set_hwarg(&rrd, CF_SEASONAL, RRA_seasonal_gamma, optarg)) {
-                rrd_free(&rrd);
-                return -1;
+            if (set_hwarg(&rrd, CF_SEASONAL, RRA_seasonal_gamma, options.optarg)) {
+		goto done;
             }
             break;
         case 'v':
-            if (set_hwarg(&rrd, CF_DEVSEASONAL, RRA_seasonal_gamma, optarg)) {
-                rrd_free(&rrd);
-                return -1;
-            }
+            if (set_hwarg(&rrd, CF_DEVSEASONAL, RRA_seasonal_gamma, options.optarg)) {
+		goto done;
+	    }
             break;
         case 'b':
-            if (sscanf(optarg, DS_NAM_FMT, ds_nam) != 1) {
+            if (sscanf(options.optarg, DS_NAM_FMT, ds_nam) != 1) {
                 rrd_set_error("invalid argument for aberrant-reset");
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             if ((ds = ds_match(&rrd, ds_nam)) == -1) {
                 /* ds_match handles it own errors */
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             reset_aberrant_coefficients(&rrd, rrd_file, (unsigned long) ds);
             if (rrd_test_error()) {
-                rrd_free(&rrd);
-                rrd_close(rrd_file);
-                return -1;
+		goto done;
             }
             break;
         case 's':
-            strcpy(rrd.stat_head->version, RRD_VERSION);    /* smoothing_window causes Version 4 */
-            if (set_hwarg
-                (&rrd, CF_SEASONAL, RRA_seasonal_smoothing_window, optarg)) {
-                rrd_free(&rrd);
-                return -1;
+            if (atoi(rrd.stat_head->version) < atoi(RRD_VERSION4)) {
+                strcpy(rrd.stat_head->version, RRD_VERSION4);    /* smoothing_window causes Version 4 */
+            }
+            if (set_hwsmootharg
+                (&rrd, CF_SEASONAL, RRA_seasonal_smoothing_window, options.optarg)) {
+		goto done;
             }
             break;
         case 'S':
-            strcpy(rrd.stat_head->version, RRD_VERSION);    /* smoothing_window causes Version 4 */
-            if (set_hwarg
+            if (atoi(rrd.stat_head->version) < atoi(RRD_VERSION4)) {
+                strcpy(rrd.stat_head->version, RRD_VERSION4);    /* smoothing_window causes Version 4 */
+            }
+            if (set_hwsmootharg
                 (&rrd, CF_DEVSEASONAL, RRA_seasonal_smoothing_window,
-                 optarg)) {
-                rrd_free(&rrd);
-                return -1;
+                 options.optarg)) {
+		goto done;
             }
             break;
+	case 't':
+	    opt_newstep = atoi(options.optarg);
+	    break;
+	case 'D':
+	    // ignore, handled in previous argv parsing round
+	    break;
         case '?':
-            if (optopt != 0)
-                rrd_set_error("unknown option '%c'", optopt);
-            else
-                rrd_set_error("unknown option '%s'", argv[optind - 1]);
-            rrd_free(&rrd);
-            rrd_close(rrd_file);
-            return -1;
+            rrd_set_error("%s", options.errmsg);
+	    goto done;
         }
     }
     if (optcnt > 0) {
@@ -339,12 +382,14 @@ int rrd_tune(
         /* need to write rra_defs for RRA parameter changes */
         rrd_write(rrd_file, rrd.rra_def,
                   sizeof(rra_def_t) * rrd.stat_head->rra_cnt);
-    } else {
+    }
+    
+    if (options.optind >= options.argc) {
         int       i;
 
         for (i = 0; i < (int) rrd.stat_head->ds_cnt; i++)
             if (dst_conv(rrd.ds_def[i].dst) != DST_CDEF) {
-                printf("DS[%s] typ: %s\thbt: %ld\tmin: %1.4f\tmax: %1.4f\n",
+                printf("DS[%s] typ: %s\thbt: %lu\tmin: %1.4f\tmax: %1.4f\n",
                        rrd.ds_def[i].ds_nam,
                        rrd.ds_def[i].dst,
                        rrd.ds_def[i].par[DS_mrhb_cnt].u_cnt,
@@ -358,33 +403,57 @@ int rrd_tune(
                                 &buffer);
                 printf("DS[%s] typ: %s\tcdef: %s\n", rrd.ds_def[i].ds_nam,
                        rrd.ds_def[i].dst, buffer);
-                free(buffer);
+                if (buffer) free(buffer);
             }
     }
-    rrd_close(rrd_file);
+
+    options.optind = handle_modify(&rrd, in_filename, options.argc, options.argv, options.optind + 1, opt_newstep);
+    rc = 0;
+done:
+    if (in_filename && rrdc_is_any_connected()) {
+        // save any errors....
+        char *e = strdup(rrd_get_error());
+	// is it a good idea to just ignore the error ????
+	rrdc_forget(in_filename);
+	rrd_clear_error();
+        
+        if (e) {
+            rrd_set_error(e);
+            free(e);
+        } else
+            rrd_set_error("error message was lost (out of memory)");
+    }
+    if (rrd_file) {
+	rrd_close(rrd_file);
+    }
     rrd_free(&rrd);
-    return 0;
+    return rc;
 }
 
-int set_hwarg(
+static int set_hwarg(
     rrd_t *rrd,
     enum cf_en cf,
     enum rra_par_en rra_par,
-    char *arg)
+    const char *arg)
 {
     double    param;
     unsigned long i;
     signed short rra_idx = -1;
+    unsigned int strtod_ret_val;
 
+    strtod_ret_val = rrd_strtodbl(arg, NULL, &param, NULL);
     /* read the value */
-    param = atof(arg);
-    if (param <= 0.0 || param >= 1.0) {
+    if ((strtod_ret_val == 1 || strtod_ret_val == 2 ) &&
+         (param <= 0.0 || param >= 1.0) ) {
         rrd_set_error("Holt-Winters parameter must be between 0 and 1");
+        return -1;
+    } else if( strtod_ret_val == 0 || strtod_ret_val > 2 ) {
+        rrd_set_error("Unable to parse Holt-Winters parameter");
         return -1;
     }
     /* does the appropriate RRA exist?  */
     for (i = 0; i < rrd->stat_head->rra_cnt; ++i) {
-        if (cf_conv(rrd->rra_def[i].cf_nam) == cf) {
+        if (rrd_cf_conv(rrd->rra_def[i].cf_nam) == cf) {
             rra_idx = i;
             break;
         }
@@ -399,23 +468,69 @@ int set_hwarg(
     return 0;
 }
 
-int set_deltaarg(
+static int set_hwsmootharg(
     rrd_t *rrd,
+    enum cf_en cf,
     enum rra_par_en rra_par,
-    char *arg)
+    const char *arg)
 {
-    rrd_value_t param;
+    double    param;
     unsigned long i;
     signed short rra_idx = -1;
+    unsigned int strtod_ret_val;
 
-    param = atof(arg);
-    if (param < 0.1) {
-        rrd_set_error("Parameter specified is too small");
+    /* read the value */
+    strtod_ret_val = rrd_strtodbl(arg, NULL, &param, NULL);
+    /* in order to avoid smoothing of SEASONAL or DEVSEASONAL, we need to 
+     * the 0.0 value*/
+    if ( (strtod_ret_val == 1 || strtod_ret_val == 2 ) &&
+         (param < 0.0 || param > 1.0) ) {
+        rrd_set_error("Holt-Winters parameter must be between 0 and 1");
+        return -1;
+    } else if( strtod_ret_val == 0 || strtod_ret_val > 2 ) {
+        rrd_set_error("Unable to parse Holt-Winters parameter");
         return -1;
     }
     /* does the appropriate RRA exist?  */
     for (i = 0; i < rrd->stat_head->rra_cnt; ++i) {
-        if (cf_conv(rrd->rra_def[i].cf_nam) == CF_FAILURES) {
+        if (rrd_cf_conv(rrd->rra_def[i].cf_nam) == cf) {
+            rra_idx = i;
+            break;
+        }
+    }
+    if (rra_idx == -1) {
+        rrd_set_error("Holt-Winters RRA does not exist in this RRD");
+        return -1;
+    }
+
+    /* set the value */
+    rrd->rra_def[rra_idx].par[rra_par].u_val = param;
+    return 0;
+}
+
+static int set_deltaarg(
+    rrd_t *rrd,
+    enum rra_par_en rra_par,
+    const char *arg)
+{
+    rrd_value_t param;
+    unsigned long i;
+    signed short rra_idx = -1;
+    unsigned int strtod_ret_val;
+
+    strtod_ret_val = rrd_strtodbl(arg, NULL, &param, NULL);
+    if ((strtod_ret_val == 1 || strtod_ret_val == 2) &&
+         param < 0.1) {
+        rrd_set_error("Parameter specified is too small");
+        return -1;
+    } else if( strtod_ret_val == 1 || strtod_ret_val > 2 ) {
+        rrd_set_error("Unable to parse parameter in set_deltaarg");
+        return -1;
+    }
+
+    /* does the appropriate RRA exist?  */
+    for (i = 0; i < rrd->stat_head->rra_cnt; ++i) {
+        if (rrd_cf_conv(rrd->rra_def[i].cf_nam) == CF_FAILURES) {
             rra_idx = i;
             break;
         }
@@ -430,10 +545,10 @@ int set_deltaarg(
     return 0;
 }
 
-int set_windowarg(
+static int set_windowarg(
     rrd_t *rrd,
     enum rra_par_en rra_par,
-    char *arg)
+    const char *arg)
 {
     unsigned long param;
     unsigned long i, cdp_idx;
@@ -448,7 +563,7 @@ int set_windowarg(
     }
     /* does the appropriate RRA exist?  */
     for (i = 0; i < rrd->stat_head->rra_cnt; ++i) {
-        if (cf_conv(rrd->rra_def[i].cf_nam) == CF_FAILURES) {
+        if (rrd_cf_conv(rrd->rra_def[i].cf_nam) == CF_FAILURES) {
             rra_idx = i;
             break;
         }

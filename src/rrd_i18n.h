@@ -1,15 +1,14 @@
+#ifndef RRD_I18N_H_E9D8F44A32654DF9B92B1862D5371142
+#define RRD_I18N_H_E9D8F44A32654DF9B92B1862D5371142
+
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Takao Fujiwara, 2008
+ * RRDtool 1.7.2  Copyright by Takao Fujiwara, 2008
  *****************************************************************************
  * rrd_i18n.h   Common Header File
  *****************************************************************************/
 #ifdef  __cplusplus
 extern    "C" {
 #endif
-
-
-#ifndef _RRD_I18N_H
-#define _RRD_I18N_H
 
 #ifdef ENABLE_NLS
 #  ifdef _LIBC
@@ -24,12 +23,8 @@ extern    "C" {
 
 #define N_(String) String
 
-#endif
-
 #ifdef  __cplusplus
 }
 #endif
 
-#ifdef  __cplusplus
-}
 #endif

@@ -1,10 +1,10 @@
 /****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  ****************************************************************************
  * rrd_rpncalc.h  RPN calculator functions
  ****************************************************************************/
-#ifndef _RRD_RPNCALC_H
-#define _RRD_RPNCALC_H
+#ifndef RRD_RPNCALC_H_EF2FD77C45C34B71914661372C5B51EA
+#define RRD_RPNCALC_H_EF2FD77C45C34B71914661372C5B51EA
 
 /* WARNING: if new operators are added, they MUST be added at the very end of the list.
  * This is because COMPUTE (CDEF) DS store OP nodes by number (name is not
@@ -18,7 +18,13 @@ enum op_en { OP_NUMBER = 0, OP_VARIABLE, OP_INF, OP_PREV, OP_NEGINF,
     OP_UN, OP_END, OP_LTIME, OP_NE, OP_ISINF, OP_PREV_OTHER, OP_COUNT,
     OP_ATAN, OP_SQRT, OP_SORT, OP_REV, OP_TREND, OP_TRENDNAN,
     OP_ATAN2, OP_RAD2DEG, OP_DEG2RAD,
-    OP_AVG, OP_ABS, OP_ADDNAN
+    OP_PREDICT, OP_PREDICTSIGMA,
+    OP_AVG, OP_ABS, OP_ADDNAN,
+    OP_MINNAN, OP_MAXNAN,
+    OP_MEDIAN, OP_PREDICTPERC,
+    OP_DEPTH, OP_COPY, OP_ROLL, OP_INDEX, OP_STEPWIDTH,
+    OP_NEWDAY, OP_NEWWEEK, OP_NEWMONTH, OP_NEWYEAR,
+    OP_SMIN, OP_SMAX, OP_STDEV, OP_PERCENT, OP_POW, OP_ROUND
 };
 
 typedef struct rpnp_t {
@@ -28,7 +34,15 @@ typedef struct rpnp_t {
     double   *data;     /* pointer to the current value from OP_VAR DAS */
     long      ds_cnt;   /* data source count for data pointer */
     long      step;     /* time step for OP_VAR das */
+    void     *extra;    /* some extra data for longer setups */
+    void      (
+    *free_extra) (
+    void *);            /* function pointer used to free extra
+                         * - NULL for "simple" free(extra); */
 } rpnp_t;
+
+void      rpnp_freeextra(
+    rpnp_t *rpnp);
 
 /* a compact representation of rpnp_t for computed data sources */
 typedef struct rpn_cdefds_t {
@@ -37,10 +51,10 @@ typedef struct rpn_cdefds_t {
 } rpn_cdefds_t;
 
 #define MAX_VNAME_LEN 255
-#define DEF_NAM_FMT "%255[-_A-Za-z0-9]"
+#define DEF_NAM_FMT "%255[_A-Za-z0-9-]"
 
 /* limit imposed by sizeof(rpn_cdefs_t) and rrd.ds_def.par */
-#define DS_CDEF_MAX_RPN_NODES 26
+#define DS_CDEF_MAX_RPN_NODES (int)(sizeof(unival)*10 / sizeof(rpn_cdefds_t))
 
 typedef struct rpnstack_t {
     double   *s;
@@ -55,8 +69,11 @@ void      rpnstack_free(
 
 void      parseCDEF_DS(
     const char *def,
-    rrd_t *rrd,
-    int ds_idx);
+    ds_def_t *ds_def,
+    void *key_hash,
+    long      (*lookup)(void *,
+                        char *));
+
 long      lookup_DS(
     void *rrd_vptr,
     char *ds_name);
@@ -74,13 +91,17 @@ void      rpn_compact2str(
 rpnp_t   *rpn_parse(
     void *key_hash,
     const char *const expr,
-    long      (*lookup) (void *,
-                         char *));
+    long      (*lookup)(void *,
+                        char *));
 short     rpn_calc(
     rpnp_t *rpnp,
     rpnstack_t *rpnstack,
     long data_idx,
     rrd_value_t *output,
-    int output_idx);
+    int output_idx,
+    int step_width);
+
+int       find_first_weekday(
+    void);
 
 #endif

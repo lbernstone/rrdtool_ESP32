@@ -4,9 +4,6 @@
 
 #include "rrd_tool.h"
 #include "rrd_format.h"
-#ifndef WIN32
-#include "rrd_config.h"
-#endif
 #include "rrd_hw_math.h"
 #include "rrd_hw_update.h"
 
@@ -308,7 +305,7 @@ int update_devseasonal(
         /* associated HWPREDICT has already been updated */
         if (isnan(coefs[CDP_hw_last_intercept].u_val) ||
             isnan(coefs[CDP_hw_last_slope].u_val) || isnan(seasonal_coef)) {
-            /* one of the prediction values is uinitialized */
+            /* one of the prediction values is uninitialized */
             rrd->cdp_prep[cdp_idx].scratch[CDP_scratch_idx].u_val = DNAN;
             return 0;
         } else {
@@ -322,7 +319,7 @@ int update_devseasonal(
         /* associated HWPREDICT has NOT been updated */
         if (isnan(coefs[CDP_hw_intercept].u_val) ||
             isnan(coefs[CDP_hw_slope].u_val) || isnan(seasonal_coef)) {
-            /* one of the prediction values is uinitialized */
+            /* one of the prediction values is uninitialized */
             rrd->cdp_prep[cdp_idx].scratch[CDP_scratch_idx].u_val = DNAN;
             return 0;
         } else {

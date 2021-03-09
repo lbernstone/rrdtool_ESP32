@@ -1,45 +1,14 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  * This code is stolen from rateup (mrtg-2.x) by Dave Rand
  *****************************************************************************
  * diff calculate the difference between two very long integers available as
  *      strings
- *****************************************************************************
- * $Id: rrd_diff.c 1946 2009-10-24 10:46:42Z oetiker $
- * $Log$
- * Revision 1.4  2003/03/10 00:30:34  oetiker
- * handle cases with two negative numbers
- * --  Sasha Mikheev <sasha@avalon-net.co.il>
- *
- * Revision 1.3  2002/04/01 18:31:22  oetiker
- * "!" takes a higher preference than "||" this means rrd_update N:: would
- * segfault -- Oliver Cook <ollie@uk.clara.net>
- *
- * Revision 1.2  2002/02/01 20:34:49  oetiker
- * fixed version number and date/time
- *
- * Revision 1.1.1.1  2001/02/25 22:25:05  oetiker
- * checkin
- *
- * Revision 1.1  1998/10/08 18:21:45  oetiker
- * Initial revision
- *
- * Revision 1.3  1998/02/06 21:10:52  oetiker
- * removed max define .. it is now in rrd_tool.h
- *
- * Revision 1.2  1997/12/07 20:38:03  oetiker
- * ansified
- *
- * Revision 1.1  1997/11/28 23:31:59  oetiker
- * Initial revision
- *
  *****************************************************************************/
 
-#include "rrd_tool.h"
-
-#ifdef WIN32
 #include <ctype.h>
-#endif
+#include "rrd_tool.h"
+#include "rrd_strtod.h"
 
 double rrd_diff(
     char *a,
@@ -115,10 +84,17 @@ double rrd_diff(
                 c = 0;
             }
         }
-        result = -atof(res);
-    } else
-        result = atof(res);
-
+        if (rrd_strtodbl(res, NULL, &result, "expected a number") != 2){
+            result = DNAN;
+        }
+        else {
+            result = -result;
+        }
+    } else {
+        if (rrd_strtodbl(res, NULL, &result, "expected a number") != 2){
+            result = DNAN;
+        }
+    }
     if (a_neg + b_neg == 2) /* both are negatives, reverse sign */
         result = -result;
 

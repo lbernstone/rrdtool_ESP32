@@ -1,61 +1,83 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  *****************************************************************************
  * rrd_first Return
  *****************************************************************************
  * Initial version by Burton Strauss, ntopSupport.com - 3/2005
  *****************************************************************************/
 
-#include "rrd_tool.h"
-
-#ifdef WIN32
 #include <stdlib.h>
-#endif
+#include "rrd_tool.h"
+#include "rrd_client.h"
+
 
 time_t rrd_first(
     int argc,
     char **argv)
 {
+    struct optparse_long longopts[] = {
+        {"rraindex", 129, OPTPARSE_REQUIRED},
+        {"daemon", 'd', OPTPARSE_REQUIRED},
+        {0},
+    };
+    struct    optparse options;
+    int       opt;
     int       target_rraindex = 0;
     char     *endptr;
-    struct option long_options[] = {
-        {"rraindex", required_argument, 0, 129},
-        {0, 0, 0, 0}
-    };
+    char *opt_daemon = NULL;
 
-    optind = 0;
-    opterr = 0;         /* initialize getopt */
-
-    while (1) {
-        int       option_index = 0;
-        int       opt;
-
-        opt = getopt_long(argc, argv, "", long_options, &option_index);
-
-        if (opt == EOF)
-            break;
-
+    optparse_init(&options, argc, argv);
+    while ((opt = optparse_long(&options, longopts, NULL)) != -1) {
         switch (opt) {
         case 129:
-            target_rraindex = strtol(optarg, &endptr, 0);
+            target_rraindex = strtol(options.optarg, &endptr, 0);
             if (target_rraindex < 0) {
                 rrd_set_error("invalid rraindex number");
+                if (opt_daemon != NULL) {
+                    free (opt_daemon);
+                }
                 return (-1);
             }
             break;
-        default:
-            rrd_set_error("usage rrdtool %s [--rraindex number] file.rrd",
-                          argv[0]);
-            return (-1);
+        case 'd':
+            if (opt_daemon != NULL) {
+                    free (opt_daemon);
+            }
+            opt_daemon = strdup(options.optarg);
+            if (opt_daemon == NULL)
+            {
+                rrd_set_error ("strdup failed.");
+                return -1;
+            }
+            break;
+        case '?':
+            rrd_set_error("%s", options.errmsg);
+            if (opt_daemon != NULL) {
+            	free (opt_daemon);
+            }
+            return -1;
         }
     }
 
-    if (optind >= argc) {
-        rrd_set_error("not enough arguments");
+    if (options.optind >= options.argc) {
+        rrd_set_error("usage rrdtool %s [--rraindex number] [--daemon|-d <addr>] file.rrd",
+                      options.argv[0]);
+        if (opt_daemon != NULL) free (opt_daemon);
         return -1;
     }
 
-    return (rrd_first_r(argv[optind], target_rraindex));
+    rrdc_connect (opt_daemon);
+    if (rrdc_is_connected (opt_daemon)) {
+      if (opt_daemon != NULL) {
+        free (opt_daemon);
+      }
+      return rrdc_first(options.argv[options.optind], target_rraindex);
+    } else {
+      if (opt_daemon != NULL) {
+      	free (opt_daemon);
+      }
+      return rrd_first_r(options.argv[options.optind], target_rraindex);
+	}
 }
 
 
@@ -68,7 +90,8 @@ time_t rrd_first_r(
     rrd_t     rrd;
     rrd_file_t *rrd_file;
 
-    rrd_file = rrd_open(filename, &rrd, RRD_READONLY);
+    rrd_init(&rrd);
+    rrd_file = rrd_open(filename, &rrd, RRD_READONLY | RRD_LOCK);
     if (rrd_file == NULL) {
         goto err_free;
     }

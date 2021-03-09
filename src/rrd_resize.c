@@ -1,16 +1,14 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  *****************************************************************************
  * rrd_resize.c Alters size of an RRA
  *****************************************************************************
  * Initial version by Alex van den Bogaerdt
  *****************************************************************************/
 
-#include "rrd_tool.h"
-
-#ifdef WIN32
 #include <stdlib.h>
-#endif
+
+#include "rrd_tool.h"
 
 int rrd_resize(
     int argc,
@@ -23,7 +21,7 @@ int rrd_resize(
     unsigned long l, rra;
     long      modify;
     unsigned long target_rra;
-    int       grow = 0, shrink = 0;
+    int       shrink = 0;
     char     *endptr;
     rrd_file_t *rrd_file, *rrd_out_file;
 
@@ -40,7 +38,7 @@ int rrd_resize(
     target_rra = strtol(argv[2], &endptr, 0);
 
     if (!strcmp(argv[3], "GROW"))
-        grow = 1;
+        shrink = 0;
     else if (!strcmp(argv[3], "SHRINK"))
         shrink = 1;
     else {
@@ -59,21 +57,12 @@ int rrd_resize(
         modify = -modify;
 
 
-    rrd_file = rrd_open(infilename, &rrdold, RRD_READWRITE | RRD_COPY);
+    rrd_init(&rrdold);
+    rrd_file = rrd_open(infilename, &rrdold, RRD_READWRITE | RRD_LOCK | RRD_COPY);
     if (rrd_file == NULL) {
         rrd_free(&rrdold);
         return (-1);
     }
-
-#ifndef ESP32
-    if (rrd_lock(rrd_file) != 0) {
-        rrd_set_error("could not lock original RRD");
-        rrd_free(&rrdold);
-        rrd_close(rrd_file);
-        return (-1);
-    }
-#endif
-
 
     if (target_rra >= rrdold.stat_head->rra_cnt) {
         rrd_set_error("no such RRA in this RRD");
@@ -89,47 +78,42 @@ int rrd_resize(
             rrd_close(rrd_file);
             return (-1);
         }
-    /* the size of the new file */
-    /* yes we are abusing the float cookie for this, aargh */
+
+    rrd_init(&rrdnew);
+    /* These need to be initialized before calling rrd_open() with 
+       the RRD_CREATE flag */
+
     if ((rrdnew.stat_head = (stat_head_t*)calloc(1, sizeof(stat_head_t))) == NULL) {
         rrd_set_error("allocating stat_head for new RRD");
         rrd_free(&rrdold);
         rrd_close(rrd_file);
         return (-1);
     }
-    rrdnew.stat_head->float_cookie = rrd_file->file_len +
-        (rrdold.stat_head->ds_cnt * sizeof(rrd_value_t) * modify);
-    rrd_out_file = rrd_open(outfilename, &rrdnew, RRD_READWRITE | RRD_CREAT);
+    memcpy(rrdnew.stat_head,rrdold.stat_head,sizeof(stat_head_t));
+
+    if ((rrdnew.rra_def = (rra_def_t *)malloc(sizeof(rra_def_t) * rrdold.stat_head->rra_cnt)) == NULL) {
+        rrd_set_error("allocating rra_def for new RRD");
+        rrd_free(&rrdnew);
+        rrd_free(&rrdold);
+        rrd_close(rrd_file);
+        return (-1);
+    }
+    memcpy(rrdnew.rra_def,rrdold.rra_def,sizeof(rra_def_t) * rrdold.stat_head->rra_cnt);
+
+    /* Set this so that the file will be created with the correct size */
+    rrdnew.rra_def[target_rra].row_cnt += modify;
+
+    rrd_out_file = rrd_open(outfilename, &rrdnew, RRD_READWRITE | RRD_CREAT | RRD_LOCK);
     if (rrd_out_file == NULL) {
         rrd_set_error("Can't create '%s': %s", outfilename,
                       rrd_strerror(errno));
         rrd_free(&rrdnew);
         rrd_free(&rrdold);
         rrd_close(rrd_file);
-        rrd_close(rrd_out_file);
         return (-1);
     }
-#ifndef ESP32
-    if (rrd_lock(rrd_out_file) != 0) {
-        rrd_set_error("could not lock new RRD");
-        rrd_free(&rrdnew);
-        rrd_free(&rrdold);
-        rrd_close(rrd_file);
-        rrd_close(rrd_out_file);
-        return (-1);
-    }
-#endif
 /*XXX: do one write for those parts of header that are unchanged */
-    if ((rrdnew.stat_head = (stat_head_t*)malloc(sizeof(stat_head_t))) == NULL) {
-        rrd_set_error("allocating stat_head for new RRD");
-        rrd_free(&rrdnew);
-        rrd_free(&rrdold);
-        rrd_close(rrd_file);
-        rrd_close(rrd_out_file);
-        return (-1);
-    }
-
-    if ((rrdnew.rra_ptr = (rra_ptr_t*)malloc(sizeof(rra_ptr_t) * rrdold.stat_head->rra_cnt)) == NULL) {
+    if ((rrdnew.rra_ptr = (rra_ptr_t *)malloc(sizeof(rra_ptr_t) * rrdold.stat_head->rra_cnt)) == NULL) {
         rrd_set_error("allocating rra_ptr for new RRD");
         rrd_free(&rrdnew);
         rrd_free(&rrdold);
@@ -138,28 +122,16 @@ int rrd_resize(
         return (-1);
     }
 
-    if ((rrdnew.rra_def = (rra_def_t*)malloc(sizeof(rra_def_t) * rrdold.stat_head->rra_cnt)) == NULL) {
-        rrd_set_error("allocating rra_def for new RRD");
-        rrd_free(&rrdnew);
-        rrd_free(&rrdold);
-        rrd_close(rrd_file);
-        rrd_close(rrd_out_file);
-        return (-1);
-    }
-     
-    memcpy(rrdnew.stat_head,rrdold.stat_head,sizeof(stat_head_t));
-    rrdnew.ds_def = rrdold.ds_def;
+    /* Put this back the way it was so that the rest of the algorithm
+       below remains unchanged, it will be corrected later */
+    rrdnew.rra_def[target_rra].row_cnt -= modify;
 
-    /* we are going to free rrdold later on, so make sure its not still pointing to the new stuff */
-    rrdold.live_head = NULL;
-    memcpy(rrdnew.rra_def,rrdold.rra_def,sizeof(rra_def_t) * rrdold.stat_head->rra_cnt);      
+    rrdnew.ds_def = rrdold.ds_def;
     rrdnew.live_head = rrdold.live_head;
-    rrdold.live_head = NULL;
     rrdnew.pdp_prep = rrdold.pdp_prep;
-    rrdold.pdp_prep = NULL;
     rrdnew.cdp_prep = rrdold.cdp_prep;
-    rrdold.cdp_prep = NULL;
     memcpy(rrdnew.rra_ptr,rrdold.rra_ptr,sizeof(rra_ptr_t) * rrdold.stat_head->rra_cnt);
+
 
     version = atoi(rrdold.stat_head->version);
     switch (version) {
@@ -173,6 +145,12 @@ int rrd_resize(
     default:
         rrd_set_error("Do not know how to handle RRD version %s",
                       rrdold.stat_head->version);
+
+        rrdnew.ds_def = NULL;
+        rrdnew.live_head = NULL;
+        rrdnew.pdp_prep = NULL;
+        rrdnew.cdp_prep = NULL;
+
         rrd_free(&rrdnew);
         rrd_free(&rrdold);
         rrd_close(rrd_file);
@@ -273,9 +251,14 @@ int rrd_resize(
     /* Move the rest of the CDPs
      */
     while (1) {
-        if (rrd_read(rrd_file, &buffer, sizeof(rrd_value_t) * 1) <= 0)
+        ssize_t b_read;
+        if ((b_read=rrd_read(rrd_file, &buffer, sizeof(rrd_value_t) * 1)) <= 0)
             break;
-        rrd_write(rrd_out_file, &buffer, sizeof(rrd_value_t) * 1);
+        if(rrd_out_file->pos+b_read > rrd_out_file->file_len) {
+            fprintf(stderr,"WARNING: ignoring last %zd bytes\nWARNING: if you see this message multiple times for a single file you're in trouble\n", b_read);
+            continue;
+        }
+        rrd_write(rrd_out_file, &buffer, b_read);
     }
     rrdnew.rra_def[target_rra].row_cnt += modify;
     rrd_seek(rrd_out_file,
@@ -294,6 +277,12 @@ int rrd_resize(
     rrd_close(rrd_file);    
     rrd_close(rrd_out_file);    
     rrd_free(&rrdold);
+
+    rrdnew.ds_def = NULL;
+    rrdnew.live_head = NULL;
+    rrdnew.pdp_prep = NULL;
+    rrdnew.cdp_prep = NULL;
+
     rrd_free(&rrdnew);
     return (0);
 }

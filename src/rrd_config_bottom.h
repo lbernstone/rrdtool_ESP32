@@ -10,6 +10,7 @@
 #  undef _BSD_SOURCE
 # endif
 # define _XOPEN_SOURCE 600
+# define _DEFAULT_SOURCE 1
 # define _BSD_SOURCE 1
 # include <features.h>
 #endif
@@ -65,6 +66,13 @@
 
 #ifdef HAVE_UNISTD_H
 # include <unistd.h>
+#endif
+
+/* for MinGW-w64 */
+#if (defined(__MINGW32__) && !defined(_POSIX_THREAD_SAFE_FUNCTIONS))
+/* time.h of MinGW-w64 requires _POSIX_THREAD_SAFE_FUNCTIONS to be defined
+ * in order to provide ctime_r, gmtime_r or localtime_r. */
+#define _POSIX_THREAD_SAFE_FUNCTIONS 200112L
 #endif
 
 #ifdef TIME_WITH_SYS_TIME
@@ -170,12 +178,17 @@ char *strchr (), *strrchr ();
 #endif
 
 /* for Solaris */
-#if (! defined(HAVE_ISINF) && defined(HAVE_FPCLASS))
-#  define HAVE_ISINF 1
-#  ifdef isinf
+#if (! defined(HAVE_ISINF) && defined(HAVE_FPCLASS)) 
+# define HAVE_ISINF 1
+# ifdef isinf
 #  undef isinf
-#  endif
-#  define isinf(a) (fpclass(a) == FP_NINF || fpclass(a) == FP_PINF)
+# endif
+# define isinf(a) (fpclass(a) == FP_NINF || fpclass(a) == FP_PINF)
+#endif
+
+/* solaris 8/9 has rint but not round */
+#if (! defined(HAVE_ROUND) && defined(HAVE_RINT))
+# define round rint
 #endif
 
 /* solaris 10 it defines isnan such that only forte can compile it ... bad bad  */
@@ -190,7 +203,7 @@ char *strchr (), *strrchr ();
 #  define isinf(a) (fp_class(a) == FP_NEG_INF || fp_class(a) == FP_POS_INF)
 #endif
 
-#if (! defined(HAVE_ISINF) && defined(HAVE_FPCLASSIFY) && defined(FP_PLUS_INF) && defined(FP_MINUS_INF))
+#if (! defined(HAVE_ISINF) && defined(HAVE_FPCLASSIFY) && defined(FP_MINUS_INF) && defined(FP_PLUS_INF))
 #  define HAVE_ISINF 1
 #  define isinf(a) (fpclassify(a) == FP_MINUS_INF || fpclassify(a) == FP_PLUS_INF)
 #endif
@@ -222,14 +235,6 @@ char *strchr (), *strrchr ();
 
 #ifndef HAVE_ISINF
 #error "Can't compile without isinf function"
-#endif
-
-#if (! defined(HAVE_FDATASYNC) && defined(HAVE_FSYNC))
-#define fdatasync fsync
-#endif
-
-#if (!defined(HAVE_FDATASYNC) && !defined(HAVE_FSYNC))
-#error "Can't compile with without fsync and fdatasync"
 #endif
 
 #endif /* RRD_CONFIG_BOTTOM_H */

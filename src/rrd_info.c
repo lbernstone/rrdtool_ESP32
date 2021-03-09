@@ -1,23 +1,16 @@
 /*****************************************************************************
- * RRDtool 1.3.9  Copyright by Tobi Oetiker, 1997-2009
+ * RRDtool 1.7.2 Copyright by Tobi Oetiker, 1997-2019
  *****************************************************************************
  * rrd_info  Get Information about the configuration of an RRD
  *****************************************************************************/
 
 #include "rrd_tool.h"
 #include "rrd_rpncalc.h"
+#include "rrd_client.h"
 #include <stdarg.h>
-
-#ifdef WIN32
-#include <stdlib.h>
+#ifdef _MSC_VER
+#include "asprintf.h"   /* for vasprintf() here */
 #endif
-
-/* proto */
-rrd_info_t *rrd_info(
-    int,
-    char **);
-rrd_info_t *rrd_info_r(
-    char *filename);
 
 /* allocate memory for string */
 char     *sprintf_alloc(
@@ -27,11 +20,15 @@ char     *sprintf_alloc(
     char     *str = NULL;
     va_list   argp;
 #ifdef HAVE_VASPRINTF
-	va_start( argp, fmt );
-	vasprintf( &str, fmt, argp );
+    va_start( argp, fmt );
+    if (vasprintf( &str, fmt, argp ) == -1){
+        va_end(argp);
+        rrd_set_error ("vasprintf failed.");
+        return(NULL);
+    }
 #else
     int       maxlen = 1024 + strlen(fmt);
-    str = (char*)(malloc(sizeof(char) * (maxlen + 1)));
+    str = (char*)malloc(sizeof(char) * (maxlen + 1));
     if (str != NULL) {
         va_start(argp, fmt);
 #ifdef HAVE_VSNPRINTF
@@ -40,7 +37,7 @@ char     *sprintf_alloc(
         vsprintf(str, fmt, argp);
 #endif
     }
-#endif // HAVE_VASPRINTF
+#endif /* HAVE_VASPRINTF */
     va_end(argp);
     return str;
 }
@@ -53,7 +50,7 @@ rrd_info_t
 {
     rrd_info_t *next;
 
-    next = (rrd_info_t*)(malloc(sizeof(*next)));
+    next = (rrd_info_t*)malloc(sizeof(*next));
     next->next = (rrd_info_t *) 0;
     if (info)
         info->next = next;
@@ -70,13 +67,12 @@ rrd_info_t
         next->value.u_int = value.u_int;
         break;
     case RD_I_STR:
-        next->value.u_str = (char*)(malloc(sizeof(char) * (strlen(value.u_str) + 1)));
-        strcpy(next->value.u_str, value.u_str);
+        next->value.u_str = strdup(value.u_str);
         break;
     case RD_I_BLO:
         next->value.u_blo.size = value.u_blo.size;
         next->value.u_blo.ptr =
-            (unsigned char*)malloc(sizeof(unsigned char) * value.u_blo.size);
+            (unsigned char *)malloc(sizeof(unsigned char) * value.u_blo.size);
         memcpy(next->value.u_blo.ptr, value.u_blo.ptr, value.u_blo.size);
         break;
     }
@@ -88,22 +84,79 @@ rrd_info_t *rrd_info(
     int argc,
     char **argv)
 {
+    struct optparse_long longopts[] = {
+        {"daemon", 'd', OPTPARSE_REQUIRED},
+        {"noflush", 'F', OPTPARSE_NONE},
+        {0},
+    };
+    struct    optparse options;
+    int       opt;
     rrd_info_t *info;
+    char *opt_daemon = NULL;
+    int status;
+    int flushfirst = 1;
 
-    if (argc < 2) {
-        rrd_set_error("please specify an rrd");
+    optparse_init(&options, argc, argv);
+    while ((opt = optparse_long(&options, longopts, NULL)) != -1) {
+        switch (opt) {
+        case 'd':
+            if (opt_daemon != NULL) {
+                free (opt_daemon);
+            }
+            opt_daemon = strdup(options.optarg);
+            if (opt_daemon == NULL)
+            {
+                rrd_set_error ("strdup failed.");
+                return NULL;
+            }
+            break;
+
+        case 'F':
+            flushfirst = 0;
+            break;
+
+        case '?':
+            rrd_set_error("%s", options.errmsg);
+            if (opt_daemon != NULL) {
+            	free (opt_daemon);
+            }
+            return NULL;
+        }
+    } /* while (opt != -1) */
+
+    if (options.argc - options.optind != 1) {
+        rrd_set_error ("Usage: rrdtool %s [--daemon |-d <addr> [--noflush|-F]] <file>",
+                options.argv[0]);
+        if (opt_daemon != NULL) {
+            free (opt_daemon);
+        }
         return NULL;
     }
 
-    info = rrd_info_r(argv[1]);
+    if (flushfirst) {
+        status = rrdc_flush_if_daemon(opt_daemon, options.argv[options.optind]);
+        if (status) {
+            if (opt_daemon != NULL) {
+            	free (opt_daemon);
+            }
+            return (NULL);
+        }
+    }
 
+    rrdc_connect (opt_daemon);
+    if (rrdc_is_connected (opt_daemon))
+        info = rrdc_info(options.argv[options.optind]);
+    else
+        info = rrd_info_r(options.argv[options.optind]);
+
+    if (opt_daemon != NULL) {
+    	free(opt_daemon);
+    }
     return (info);
-}
-
-
+} /* rrd_info_t *rrd_info */
 
 rrd_info_t *rrd_info_r(
-    char *filename)
+    const char *filename)
 {
     unsigned int i, ii = 0;
     rrd_t     rrd;
@@ -113,11 +166,12 @@ rrd_info_t *rrd_info_r(
     enum cf_en current_cf;
     enum dst_en current_ds;
 
-    rrd_file = rrd_open(filename, &rrd, RRD_READONLY);
+    rrd_init(&rrd);
+    rrd_file = rrd_open(filename, &rrd, RRD_READONLY | RRD_LOCK);
     if (rrd_file == NULL)
         goto err_free;
 
-    info.u_str = filename;
+    info.u_str = (char *)filename;
     cd = rrd_info_push(NULL, sprintf_alloc("filename"), RD_I_STR, info);
     data = cd;
 
@@ -129,6 +183,9 @@ rrd_info_t *rrd_info_r(
 
     info.u_cnt = rrd.live_head->last_up;
     cd = rrd_info_push(cd, sprintf_alloc("last_update"), RD_I_CNT, info);
+
+    info.u_cnt = rrd_get_header_size(&rrd);
+    cd = rrd_info_push(cd, sprintf_alloc("header_size"), RD_I_CNT, info);
 
     for (i = 0; i < rrd.stat_head->ds_cnt; i++) {
 
@@ -202,7 +259,7 @@ rrd_info_t *rrd_info_r(
         info.u_str = rrd.rra_def[i].cf_nam;
         cd = rrd_info_push(cd, sprintf_alloc("rra[%d].cf", i), RD_I_STR,
                            info);
-        current_cf = cf_conv(rrd.rra_def[i].cf_nam);
+        current_cf = rrd_cf_conv(rrd.rra_def[i].cf_nam);
 
         info.u_cnt = rrd.rra_def[i].row_cnt;
         cd = rrd_info_push(cd, sprintf_alloc("rra[%d].rows", i), RD_I_CNT,
