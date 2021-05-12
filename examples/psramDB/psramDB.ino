@@ -7,7 +7,8 @@
  * json format.  Internet access is necessary in order to sync network time.
  * Updates are entered into the database every minute through a ticker.
  ******************************************************************************************/ 
-#include <FFat.h> // rrdtool will not work on SPIFFS/LITTLEFS!
+#include <PSRamFS.h> // https://github.com/tobozo/ESP32-PsRamFS/
+#include <LITTLEFS.h> // https://github.com/lorol/LITTLEFS
 #include <WiFi.h>
 #include <rrd.h>
 #include <Ticker.h>
@@ -19,8 +20,9 @@ const char* myssid      = "wifiname";
 const char* mypasswd    = "wifipassword";
 const char ntpSrv[]     = "pool.ntp.org";
 
-const char* rrd_files[] = {"/ffat/rrd_0.rrd", "/ffat/rrd_1.rrd"}; // Must use full vfs path
-const char* rrd_0 = "-s60 -b1600000000 /ffat/rrd_0.rrd DS:bytesin:COUNTER:180:0:100000 RRA:AVERAGE:0.5:1:60 RRA:AVERAGE:0.5:10:2016 RRA:AVERAGE:0.5:360:2924"; 
+const char* rrd_files[] = {"/psram/rrd_0.rrd", "/psram/rrd_1.rrd"}; // Must use full vfs path
+const char* backup_files[] = {"/littlefs/rrd_0.rrd", "/littlefs/rrd_1.rrd"};
+const char* rrd_0 = "-s60 -b1600000000 /psram/rrd_0.rrd DS:bytesin:COUNTER:180:0:100000 RRA:AVERAGE:0.5:1:60 RRA:AVERAGE:0.5:10:2016 RRA:AVERAGE:0.5:360:2924"; 
 const int argc = 10;
 const char* rrd_1[argc] =  {"rrd_create", //Argv[0] will be ignored
                       rrd_files[1],
@@ -84,15 +86,34 @@ void handleStatus() {
   String rs0, rs1;
   lastStr(rrd_files[0], rs0);
   lastStr(rrd_files[1], rs1);
-  String json = "{\"data stores\":[" + String(rs0) + "," + String(rs1) + "]}";
+  String json = "{\"data stores\":[" + rs0 + "," + rs1 + "]}";
   server.sendHeader("cache-control", "max-age=60");
   server.send(200, "application/json", json);
+}
+
+bool copy_file(const char* srcfile, const char* destfile) {
+  FILE *src, *dest;
+  String tempfile = String(destfile) + ".new"; 
+  src = fopen(srcfile, "r");
+  if (!src) return false;
+  dest = fopen(tempfile.c_str(), "w");
+  if (!dest) return false;
+  char bufc;
+  bufc = fgetc(src);
+  while (!feof(src)) {
+    fputc(bufc, dest);
+    bufc = fgetc(src);
+  }
+  fclose(src);
+  fclose(dest);
+  if (rename(tempfile.c_str(), destfile)) return false;
+  return true;
 }
 
 void fakeData(uint8_t rrd_mask) {
   if (!rrd_mask) return;
   Serial.println("Generating fake data.  This will take ~90 seconds");
-  const uint32_t range = 140000;
+  const uint32_t range = 6000000;
   const uint32_t now = time(NULL);
   const uint32_t first_update = now - range;
   const uint16_t rrd_step = 60;
@@ -119,31 +140,46 @@ void fakeData(uint8_t rrd_mask) {
       free(filler1[y]);
     }
   }
+  copy_file(rrd_files[0],backup_files[0]);
+  copy_file(rrd_files[1],backup_files[1]);
 }
 
 bool createRrds() {
   char junk_str[9] = "rrd_info";
-  char* checker0[2] = {junk_str, (char*)rrd_files[0]};
+  char* checker0[2] = {junk_str, (char*)backup_files[0]};
   uint8_t build_data = 0;
-  if (access(rrd_files[0], F_OK) == -1 || 
+  FILE *f0 = fopen(backup_files[0], "r"); // access() does not work on lfs
+  if ( !f0 || 
         rrd_info(2,(char**)checker0) == NULL) { // did not return any info
-    unlink(rrd_files[0]);
+    log_i("unlinking rrd0");
+    unlink(backup_files[0]);
     build_data += 1;
     if(rrd_create_str(rrd_0) != 0) {
       log_e("Unable to create rrd 0");
       return 1;
     }
+  } else {
+    log_i("copying rrd0 to psram");
+    fclose(f0);
+    copy_file(backup_files[0], rrd_files[0]);
   }
-  char* checker1[2] = {junk_str, (char*)rrd_files[1]};
-  if (access(rrd_files[1], F_OK) == -1 || 
+  char* checker1[2] = {junk_str, (char*)backup_files[1]};
+  FILE *f1 = fopen(backup_files[1], "r");
+  if ( !f1 || 
         rrd_info(2,(char**)checker1) == NULL) { // did not return any info
-    unlink(rrd_files[1]);
+    log_i("unlinking rrd1");
+    unlink(backup_files[1]);
     build_data += 2;
     if(rrd_create(argc, (char**)rrd_1) != 0) {
       log_e("Unable to create rrd 1");
       return 1;
     }
+  } else {
+    log_i("copying rrd0 to psram");
+    fclose(f1);
+    copy_file(backup_files[1], rrd_files[1]);
   }
+  log_i("ready to run");
 #ifdef BUILD_TEST_DATA
   fakeData(build_data);  
 #endif
@@ -151,6 +187,7 @@ bool createRrds() {
 }  
 
 void fillData() {
+  static int backup_loop = 0;
   static uint32_t DS0 = 0;
   DS0 += random(100000);
   char upd[15];
@@ -167,19 +204,29 @@ void fillData() {
     return;
   }
   log_i("Added data");
+  if ( ++backup_loop == 5 ) {
+    copy_file(rrd_files[0],backup_files[0]);
+    copy_file(rrd_files[1],backup_files[1]);
+    backup_loop = 0;
+    log_i("backup");
+  }
 }
 
 void setup() {
   Serial.begin(115200);
 
-  if (!FFat.begin(true)) {
-    Serial.println("Unable to mount FFat");
+  if (!PSRamFS.begin(true)) {
+    Serial.println("Unable to mount psram");
+    return;
+  }
+  if (!LITTLEFS.begin(true)) {
+    Serial.println("Unable to mount littlefs");
     return;
   }
 
   WiFi.begin(myssid, mypasswd);
   WiFi.waitForConnectResult();
-  delay(250);
+  delay(200);
 
   configTime(0, 0, ntpSrv); // sync time to UTC
   struct tm now;
@@ -198,8 +245,8 @@ void setup() {
   
   server.on("/", []() {server.send(200, "text/html", indexHtml);});
   server.on("/status", []() {handleStatus();});
-  server.serveStatic("/files/rrd_0.rrd", FFat, "/rrd_0.rrd", "max-age=60");
-  server.serveStatic("/files/rrd_1.rrd", FFat, "/rrd_1.rrd", "max-age=60");
+  server.serveStatic("/files/rrd_0.rrd", PSRamFS, "/rrd_0.rrd", "max-age=60");
+  server.serveStatic("/files/rrd_1.rrd", PSRamFS, "/rrd_1.rrd", "max-age=60");
   server.begin();
   Serial.print("Server ready at http://");
   Serial.println(WiFi.localIP());
