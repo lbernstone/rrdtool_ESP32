@@ -41,7 +41,7 @@
 #define ERRBUFLEN 256
 #define CTX (rrd_get_context())
 
-#ifndef ESP32
+#if !defined ESP32 && !defined CONFIG_IDF_TARGET
 void rrd_set_error(
     char *fmt,
     ...)

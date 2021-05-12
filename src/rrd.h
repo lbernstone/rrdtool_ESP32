@@ -285,7 +285,7 @@ rrd_context_t *rrd_force_new_context(void);
     time_t *);
 
 /* HELPER FUNCTIONS */
-#ifdef ESP32
+#if defined ESP32 || defined CONFIG_IDF_TARGET
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 static SemaphoreHandle_t xRrdFlockSemaphore = NULL;

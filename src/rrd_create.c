@@ -557,7 +557,7 @@ int rrd_create_r(
 int rrd_create_str(const char* cmdString) {
   if (!cmdString) return -1;
   int result = -1;
-#ifdef ESP32
+#if defined ESP32 || defined CONFIG_IDF_TARGET
   char* pickString = (char*) malloc(strlen(cmdString)+3*sizeof(char));
   snprintf(pickString, strlen(cmdString)+3, "a %s", cmdString); //add an extra parameter for argv[0]
   char** cmd = NULL;
@@ -879,7 +879,7 @@ long int rra_random_row(
 {
     if (!rand_init) {
 
-#ifdef ESP32
+#if defined ESP32 || defined CONFIG_IDF_TARGET
         srand((unsigned int) time(NULL) + (unsigned int) getpid());
 #else
         srandom((unsigned int) time(NULL) + (unsigned int) getpid());

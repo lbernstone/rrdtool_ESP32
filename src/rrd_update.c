@@ -538,7 +538,7 @@ int _rrd_update(
 /*    rrd_dontneed(rrd_file,&rrd); */
     rrd_free(&rrd);
     rrd_close(rrd_file);
-#ifdef ESP32
+#if defined ESP32 || defined CONFIG_IDF_TARGET
     //log_v("semaphore given");
     xSemaphoreGive( xRrdFlockSemaphore );
 #endif
@@ -557,7 +557,7 @@ int _rrd_update(
     free(updvals);
   err_close:
     rrd_close(rrd_file);
-#ifdef ESP32
+#if defined ESP32 || defined CONFIG_IDF_TARGET
     //log_v("semaphore given");
     xSemaphoreGive( xRrdFlockSemaphore );
 #endif
@@ -587,7 +587,7 @@ int rrd_lock(
         } else {
             rcstat = -1;
         }
-#elif defined(ESP32)
+#elif defined(ESP32) || defined(CONFIG_IDF_TARGET)
 // flock does not work on esp32, so 
 // this is a binary semaphore for the whole library.
         if (xRrdFlockSemaphore == NULL) {
