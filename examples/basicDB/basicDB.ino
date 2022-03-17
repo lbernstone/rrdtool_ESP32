@@ -12,6 +12,7 @@
 #include <rrd.h>
 #include <Ticker.h>
 #include <WebServer.h>
+#include "javascriptrrd_wlibs-min_js_gz.h"
 
 #define BUILD_TEST_DATA
 
@@ -33,7 +34,7 @@ const char* rrd_1[argc] =  {"rrd_create", //Argv[0] will be ignored
 
 const char* indexHtml   = R"rrdJ(
 <html>
-  <script type="text/javascript" src="http://javascriptrrd.sourceforge.net/docs/javascriptrrd_v1.1.1/src/lib/javascriptrrd.wlibs.js"></script>
+  <script type="text/javascript" src="javascriptrrd.wlibs.js"></script>
   <head><title>RRD Example on ESP32</title></head>
   <body>
     <h1 id="title">RRD Example on ESP32</h1>
@@ -198,6 +199,10 @@ void setup() {
   
   server.on("/", []() {server.send(200, "text/html", indexHtml);});
   server.on("/status", []() {handleStatus();});
+  server.on("/javascriptrrd.wlibs.js", []() {
+    server.sendHeader("Content-Encoding", "gzip");
+    server.send_P(200, "application/javascript", javascriptrrd_wlibs_min_js_gz, javascriptrrd_wlibs_min_js_gz_len);
+  } );
   server.serveStatic("/files/rrd_0.rrd", FFat, "/rrd_0.rrd", "max-age=60");
   server.serveStatic("/files/rrd_1.rrd", FFat, "/rrd_1.rrd", "max-age=60");
   server.begin();
