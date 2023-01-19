@@ -1,7 +1,7 @@
 Arduino RRD library
 ===================
 
-This is a port of [rrdtool](https://oss.oetiker.ch/rrdtool/) to the ESP32 for use in simple web page delivery of graphs and data for IoT data sensors.
+This is a port of the Round Robin Database Tool [rrdtool](https://oss.oetiker.ch/rrdtool/) to the ESP32 for use in simple web page delivery of graphs and data for IoT data sensors.
 
 The source library uses glib for graphics.  ESP32 doesn't have a lot of core libraries needed for that, and doesn't really have the horsepower anyhow.  Use [javascriptRRD](http://javascriptrrd.sourceforge.net/) to have the client present the data, delivering the raw rrd files.
 
